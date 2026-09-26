@@ -4,6 +4,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from digicam_archiver.fingerprint import key_of
 from digicam_archiver.layout import (
     ExistingFiles,
@@ -56,6 +58,21 @@ def test_event_dir(tmp_path: Path) -> None:
 
 def test_event_dir_of_a_new_year(tmp_path: Path) -> None:
     assert month_dir(tmp_path, datetime(2027, 1, 3)) == tmp_path / "27-01"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Home",
+        "26-08-23 Home",  # adopted from a folder, or typed with the date on
+        "  26-08-23   Home  ",
+        "26-09-18 Uni Friends",  # a date from another day is replaced
+        "26-08-23",  # nothing but a date, so it needs a name
+        "",
+    ],
+)
+def test_event_dir_never_doubles_the_date(tmp_path: Path, name: str) -> None:
+    assert event_dir(tmp_path, WHEN, name).name.count("26-08-23") == 1
 
 
 def test_existing_event_names(tmp_path: Path) -> None:

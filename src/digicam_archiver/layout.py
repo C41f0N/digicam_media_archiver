@@ -11,6 +11,7 @@ event's first file, so an event is filed under when it started.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -30,13 +31,29 @@ SKIP_PREFIX = "."
 #: A half written copy, or a half finished encode.
 PART_SUFFIX = ".part"
 
+#: A date on the front of a name, as ``event_dir`` writes it.
+LEADING_DATE = re.compile(r"^\d{2}-\d{2}-\d{2}(\s+|$)")
+
 
 def month_dir(archive: Path, when: datetime) -> Path:
     return archive / format_month(when)
 
 
 def event_dir(archive: Path, when: datetime, name: str) -> Path:
-    return month_dir(archive, when) / f"{format_date(when)} {name}"
+    """Where an event lives: ``<archive>/26-09/26-09-18 Home``.
+
+    The date is written once.  A name that already starts with it, whether the
+    user typed it or it was adopted from the folder the archive already has, is
+    not doubled up, and a date belonging to another day is replaced rather than
+    kept.
+    """
+    text = name.strip()
+    if text.startswith(dated := f"{format_date(when)} "):
+        text = text[len(dated) :].strip()
+    else:
+        # a date from another day is the event's date's job, not the name's
+        text = LEADING_DATE.sub("", text, count=1).strip()
+    return month_dir(archive, when) / f"{dated}{text or 'Event'}"
 
 
 def existing_event_names(archive: Path, when: datetime) -> set[str]:

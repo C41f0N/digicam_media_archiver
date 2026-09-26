@@ -15,7 +15,7 @@ from digicam_archiver.partition import Plan
 from digicam_archiver.scan import scan
 from digicam_archiver.transfer import copy_photo
 from digicam_archiver.ui.app import ArchiverApp
-from digicam_archiver.ui.dialogs import ArchiveDir, Choice
+from digicam_archiver.ui.dialogs import ArchiveDir, Choice, TextInput
 from digicam_archiver.ui.name_screen import NameScreen
 from digicam_archiver.ui.partition_screen import PartitionScreen
 from digicam_archiver.ui.transfer_screen import TransferScreen
@@ -552,6 +552,54 @@ def test_existing_event_folder_asks_what_to_do(
             assert (target / "DSCF0001.JPG").read_bytes() == b"already here"
 
     run(scenario)
+
+
+def test_renaming_an_existing_folder_does_not_double_the_date(
+    digicam: Path, archive: Path, fake_handbrake: Path
+) -> None:
+    """The name box holds the name, not the folder name: one date, once."""
+    taken = archive / "26-08" / "26-08-23 Uni Friends Hangout"
+    taken.mkdir(parents=True)
+
+    async def scenario() -> None:
+        app = make_app(digicam, archive, handbrake=fake_handbrake)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            for name in ("Uni Friends Hangout", "Second day"):
+                app.screen.query_one("#name-input", Input).value = name
+                await pilot.press("enter")
+                await pilot.pause()
+            await pilot.press("ctrl+t")
+            for _ in range(40):
+                await pilot.pause()
+                if isinstance(app.screen, Choice):
+                    break
+            assert isinstance(app.screen, Choice)
+            await pilot.click("#rename")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, TextInput):
+                    break
+            assert isinstance(app.screen, TextInput)
+            # what the box offers to start from
+            assert app.screen.query_one(Input).value == "Uni Friends Hangout"
+            await pilot.press("enter")  # accept it as it stands
+            for _ in range(60):
+                await pilot.pause()
+                if isinstance(app.screen, TransferScreen) and not app.screen.state.running:
+                    break
+
+    run(scenario)
+    assert sorted(c.name for c in taken.parent.iterdir() if c.name.endswith("Hangout)")) == []
+    assert sorted(c.name for c in taken.parent.glob("*Hangout*")) == [
+        "26-08-23 Uni Friends Hangout",
+        "26-08-23 Uni Friends Hangout (2)",
+    ]
+    assert (archive / "26-08" / "26-08-23 Uni Friends Hangout (2)" / "DSCF0001.JPG").is_file()
+    # and the folder it did not move into is still empty, the date is not doubled
+    assert not list(taken.iterdir())
 
 
 def test_escape_goes_back_from_naming(digicam: Path, archive: Path) -> None:

@@ -14,7 +14,7 @@ from textual.widgets import Footer, Header, ProgressBar, RichLog, Static
 
 from ..handbrake import HandBrakeMissing, require_handbrake
 from ..layout import ExistingFiles, build_items, event_dir, existing_event_names
-from ..model import Event, format_range, human_size
+from ..model import Event, format_date, format_range, human_size
 from ..naming import sanitize, unique_name
 from ..partition import Plan
 from ..reconcile import Archived
@@ -372,11 +372,17 @@ class TransferScreen(Screen):
         return choice or "cancel"
 
     async def _ask_for_new_name(self, event: Event, name: str) -> Path | None:
-        current = f"{event.taken_start:%y-%m-%d} {name}"
+        """The same event under another name, so it lands in another folder.
+
+        The folder it came from stays in the running: asking for a new name is
+        how you get away from it, so a name already taken gets a ``(2)``.
+        """
         typed = await self.app.push_screen_wait(
             TextInput(
                 "Name for this event",
-                value=current,
+                # the name on its own: the folder already has the date and
+                # putting it in the box as well would double it up
+                value=sanitize(name, fallback=""),
                 hint="a different name makes a different folder, the date stays",
             )
         )
@@ -386,8 +392,10 @@ class TransferScreen(Screen):
         if not cleaned:
             return None
         taken = existing_event_names(self.archive, event.taken_start)
-        taken.discard(current)
-        return self.archive / f"{event.taken_start:%y-%m}" / unique_name(cleaned, taken)
+        # unique_name counts whole folder names, so date it first and let
+        # event_dir take the date off again
+        wanted = unique_name(f"{format_date(event.taken_start)} {cleaned}", taken)
+        return event_dir(self.archive, event.taken_start, wanted)
 
     async def _run(self) -> None:
         if not self.jobs:
