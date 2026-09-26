@@ -1,8 +1,7 @@
 # digicam-media-archiver
 
-Read a digicam card (or a folder of JPG and AVI dumps), work out which shots
-belong together, name each group, then copy them into an archive and turn the
-AVI clips into MP4 with HandBrake.
+A lightweight command line tool to sort and structure photos by event. Read a digicam card (or any folder of JPG and AVI dumps), work out which shots
+belong together using timestamps, name each group, then copy them into an archive and turn the AVI clips into MP4 using HandBrake.
 
 Nothing on the card is ever moved, renamed or deleted. Everything the tool
 produces goes into a new file in the archive, and a run that stops half way can
