@@ -13,13 +13,18 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, ProgressBar, RichLog, Static
 
 from ..handbrake import HandBrakeMissing, require_handbrake
-from ..layout import build_items, event_dir, existing_event_names
-from ..model import Event, human_size
+from ..layout import ExistingFiles, build_items, event_dir, existing_event_names
+from ..model import Event, format_range, human_size
 from ..naming import sanitize, unique_name
 from ..partition import Plan
+from ..reconcile import Archived
 from ..transfer import Transfer, TransferJob, TransferResult
 from .dialogs import Choice, Notice, TextInput
 from .widgets import format_eta
+
+
+class Cancelled(Exception):
+    """The run was called off while it was still being set up."""
 
 
 @dataclass
@@ -231,13 +236,34 @@ class TransferScreen(Screen):
         self.refresh_counts()
         self.set_eta(None)
         self.log_line(headline, error=not result.ok)
+        if self.app.restructure is not None and not self.app.dry_run:
+            self.run_worker(
+                self._apply_changes(),
+                name="restructure",
+                exclusive=True,
+                group="restructure",
+            )
+
+    async def _apply_changes(self) -> None:
+        """Put the archive in the shape the plan asks for, after the copying."""
+        from ..restructure import apply as apply_restructure
+
+        change = self.app.restructure
+        if change is None:
+            return
+        self.app.restructure = None
+        await asyncio.to_thread(apply_restructure, change, self.archive, self.log_line)
 
     # -------------------------------------------------------------- workers
 
     async def _prepare(self) -> None:
-        self.jobs = await self._build_jobs()
+        try:
+            self.jobs = await self._build_jobs()
+        except Cancelled:
+            self.query_one("#finished", Static).update("run cancelled")
+            return
         if not self.jobs:
-            self.query_one("#finished", Static).update("nothing to do")
+            self.query_one("#finished", Static).update("nothing to copy")
             return
 
         wanted = sum(len(job.videos) for job in self.jobs)
@@ -268,28 +294,66 @@ class TransferScreen(Screen):
     async def _build_jobs(self) -> list[TransferJob]:
         jobs: list[TransferJob] = []
         for event in self.plan.included():
-            name = self.plan.name_of(event) or "Event"
+            job = await self._build_job(event)
+            if job is not None:
+                jobs.append(job)
+        return jobs
+
+    def _archived(self, event: Event) -> Archived | None:
+        """What the archive knows about this event, or None when not adopting."""
+        if not self.app.archive_known:
+            return None
+        return self.app.reconcile.of(event)
+
+    async def _build_job(self, event: Event) -> TransferJob | None:
+        name = self.plan.name_of(event) or ""
+        archived = self._archived(event)
+        there = set(archived.present) if archived is not None else set()
+        if self.app.strict and there and archived is not None and archived.home is None:
+            # --strict will not move these into the folder the plan asked for,
+            # and copying them would put every one of them in the archive twice
+            self.log_line(
+                f"left as it is: {format_range(event)} is already in the archive, "
+                "under a different name, and --strict moves nothing"
+            )
+            return None
+        if archived is not None and archived.home is not None:
+            # the folder is already there: copy into it, do not make a twin
+            target = archived.home
+        elif not name:
+            self.log_line(
+                f"left on the card, not named: {format_range(event)}"
+                if not (archived and archived.present)
+                else f"left as it is: {format_range(event)} is inside "
+                f"{archived.home.name if archived.home else 'a folder'} and is not named"
+            )
+            return None
+        else:
             target = event_dir(self.archive, event.taken_start, name)
             if target.exists():
                 decision = await self._ask_about_existing(event, target)
                 if decision == "skip":
                     self.log_line(f"skipped {target.name}, it is already in the archive")
-                    continue
+                    return None
                 if decision == "cancel":
-                    return []
+                    raise Cancelled
                 if decision == "rename":
                     target = await self._ask_for_new_name(event, name)
                     if target is None:
-                        continue
-            target.mkdir(parents=True, exist_ok=True)
-            jobs.append(
-                TransferJob(
-                    label=name,
-                    dest_dir=target,
-                    items=tuple(build_items(target, event.files)),
-                )
-            )
-        return jobs
+                        return None
+        target.mkdir(parents=True, exist_ok=True)
+        # only what the archive is missing: files it already holds are the
+        # restructure's business, copying them again would double them up
+        wanted = [item for item in event.files if item.path not in there]
+        items = build_items(target, wanted, existing=self._existing(target))
+        return TransferJob(label=target.name, dest_dir=target, items=tuple(items))
+
+    def _existing(self, target: Path) -> ExistingFiles | None:
+        """What the folder already holds, so reruns do not copy it twice."""
+        if self.app.index is None:
+            return None
+        folder = self.app.index.by_path(target)
+        return folder.files if folder is not None else None
 
     async def _ask_about_existing(self, event: Event, target: Path) -> str:
         already = sum(1 for _ in target.iterdir())

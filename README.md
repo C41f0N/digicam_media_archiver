@@ -46,9 +46,74 @@ Useful flags:
 | `--faststart` | move the mp4 index to the front so it streams |
 | `--overwrite` | copy and convert again even when the file is already there |
 | `--checksum` | compare sha256 of every copied photo, slow but certain |
-| `--print-plan` | print the partitioning and exit |
+| `--no-adopt` | ignore what the archive holds, every event gets a fresh folder |
+| `--strict` | never move files the archive already holds; exit `2` if it would have to |
+| `--print-plan` | print the partitioning, and the rerun report with `-a`, then exit |
 | `--dry-run` | walk through the interface, stop before copying |
 | `--ascii` | plain preview instead of colour, for dull terminals |
+
+## Running the same card twice
+
+Point the tool at a card you have archived before and it works out what it has
+already done. With `-a DIR`, `--print-plan` says so in text:
+
+```sh
+.venv/bin/digicam-archiver ~/pics/card-2026-08-23 -a ~/archive --print-plan
+```
+
+```
+archive /home/you/archive: 12 event folder(s)
+  Sun 23.08.2026 14:02  partial 26-08-23 Uni Friends Hangout, 3 of 4 there
+  Mon 24.08.2026 10:00  new, nothing there
+  the archive would change:
+    move DSCF0004.JPG: 26-08-23 Uni Friends Hangout -> 26-08-24 Second day
+```
+
+In the interface the first screen asks for the archive before anything else and
+marks each event:
+
+| mark | what it means |
+| --- | --- |
+| `[in the archive]` | every file of this event is already there, nothing gets copied |
+| `[partly there]` | some files are missing and will be copied |
+| `[was one event, now two]` | you split an event that is already archived |
+| `[was two events, now one]` | you merged two of them |
+| `[which folder is this?]` | a folder holds files the card cannot explain, so it stops and asks |
+
+The naming screen offers the name the archive already uses, and you can type a
+different one. Events you leave unnamed stay on the card, which is the point:
+nothing is written for them.
+
+How a match is decided, in order:
+
+- a photo matches an archived photo of the same size and mtime, and failing
+  that the same size and the first 16 KiB of the file
+- a video matches an archived `.mp4` with the same stem, so `DSCF0003.AVI`
+  finds `DSCF0003.mp4`
+- no manifest file is written anywhere; the archive is only ever read
+
+Splitting or merging an event that is already archived means moving files that
+are already filed. The run shows every move first, and only does it when you
+say so:
+
+```
+move DSCF0004.JPG: 26-08-23 Uni Friends Hangout -> 26-08-24 Second day
+rename 26-08-23 Uni Friends Hangout -> 26-08-23 Uni Friends
+remove 26-08-23 Uni Friends Hangout if it ends up empty
+```
+
+Nothing is deleted: a file only ever leaves a folder because it moved into
+another one, a folder is removed only when `rmdir` finds it empty, and each run
+that changes the archive writes what it did to `DIR/.digicam/changes-*.json`.
+
+If a folder holds files that no event of this card accounts for, the run stops
+and asks instead of guessing, and it never touches those files.
+
+`--strict` is the same instinct for scripts: it turns the moves down instead of
+asking, so the archive is only ever added to, never rearranged. Media that the
+archive already holds under a different name is left where it is rather than
+copied in again, and the run ends with exit code `2` to say it did not do what
+the plan asked.
 
 ## The three screens
 
@@ -146,6 +211,12 @@ The month and the day come from the first shot of the event, so a night out that
 runs past midnight stays together. The names from two folders that held the same
 camera filenames (`103_FUJI` and `104_FUJI`, say) get a suffix instead of
 overwriting each other. `.THM` thumbnails and other formats are ignored.
+
+Reading the archive to match events means hashing the first 16 KiB of every
+archived photo that could be a match, which is why the first screen says
+`reading the archive` for a moment on a big archive. It happens once per run;
+`--no-adopt` skips it entirely and keeps the old behaviour of asking before
+writing into a folder that is already there.
 
 ## Tests
 

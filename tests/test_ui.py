@@ -10,10 +10,12 @@ from pathlib import Path
 import pytest
 from textual.widgets import Input, ListView, Static, Tree
 
+from digicam_archiver.layout import build_items, event_dir
 from digicam_archiver.partition import Plan
 from digicam_archiver.scan import scan
+from digicam_archiver.transfer import copy_photo
 from digicam_archiver.ui.app import ArchiverApp
-from digicam_archiver.ui.dialogs import Choice
+from digicam_archiver.ui.dialogs import ArchiveDir, Choice
 from digicam_archiver.ui.name_screen import NameScreen
 from digicam_archiver.ui.partition_screen import PartitionScreen
 from digicam_archiver.ui.transfer_screen import TransferScreen
@@ -24,7 +26,12 @@ SIZE = (120, 40)
 pytestmark = pytest.mark.ui
 
 
-def make_app(source: Path, archive: Path | None = None, handbrake: Path | None = None):
+def make_app(
+    source: Path,
+    archive: Path | None = None,
+    handbrake: Path | None = None,
+    strict: bool = False,
+):
     plan = Plan(source=source, files=scan(source))
     opts = Namespace(
         preset="Fast 720p30",
@@ -32,12 +39,29 @@ def make_app(source: Path, archive: Path | None = None, handbrake: Path | None =
         overwrite=False,
         checksum=False,
         handbrake=handbrake,
+        no_adopt=False,
+        strict=strict,
     )
     return ArchiverApp(plan, archive=archive, opts=opts)
 
 
+def archived_event(source: Path, archive: Path, position: int, name: str) -> Path:
+    """Copy one event of the card into the archive, the way a past run did."""
+    plan = Plan(source=source, files=scan(source))
+    event = plan.events()[position]
+    target = event_dir(archive, event.taken_start, name)
+    target.mkdir(parents=True, exist_ok=True)
+    for item in build_items(target, event.files):
+        copy_photo(item.source, item.dest)
+    return target
+
+
 def run(scenario) -> None:
     asyncio.run(scenario())
+
+
+def names_in(folder: Path) -> set[str]:
+    return {path.name for path in folder.iterdir()}
 
 
 def test_starts_on_the_partition_screen(digicam: Path, archive: Path) -> None:
@@ -562,3 +586,319 @@ def _raise_missing():
     raise HandBrakeMissing(
         "HandBrakeCLI not found, install it with: sudo pacman -S handbrake-cli"
     )
+
+
+# ------------------------------------------------------------------- reruns
+
+
+def test_a_rerun_marks_the_events_that_are_already_archived(
+    digicam: Path, archive: Path
+) -> None:
+    """The tree says which events the archive holds, without being asked."""
+    archived_event(digicam, archive, 0, "Uni Friends Hangout")
+
+    async def scenario() -> None:
+        app = make_app(digicam, archive)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, PartitionScreen)
+            labels = [
+                str(child.label) for child in screen.query_one("#events", Tree).root.children
+            ]
+            assert any("in the archive" in label for label in labels)
+            assert sum("in the archive" in label for label in labels) == 1
+            assert "already archived" in str(screen.query_one("#status", Static).render())
+
+    run(scenario)
+
+
+def test_a_rerun_offers_the_archive_name_for_an_archived_event(
+    digicam: Path, archive: Path
+) -> None:
+    archived_event(digicam, archive, 0, "Uni Friends Hangout")
+
+    async def scenario() -> None:
+        app = make_app(digicam, archive)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, NameScreen)
+            await pilot.pause()
+            assert screen.query_one("#name-input", Input).value == "Uni Friends Hangout"
+            assert "already there" in str(screen.query_one("#destination", Static).render())
+            # the other event is new, so it gets the date as a starting point
+            await pilot.press("alt+down")
+            await pilot.pause()
+            assert screen.query_one("#name-input", Input).value.startswith("26-08")
+
+    run(scenario)
+
+
+def test_a_second_run_over_the_same_card_copies_nothing(digicam: Path, archive: Path) -> None:
+    """Nothing new to do: the run ends without touching the folder."""
+    folder = archived_event(digicam, archive, 0, "Uni Friends Hangout")
+    before = sorted(p.name for p in folder.iterdir())
+
+    async def scenario() -> None:
+        app = make_app(digicam, archive)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            # the second event is skipped, so only the archived one is left
+            await pilot.press("j")
+            await pilot.press("x")
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            screen = app.screen
+            screen.query_one("#name-input", Input).value = "Uni Friends Hangout"
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("ctrl+t")
+            await pilot.pause()
+            assert isinstance(app.screen, TransferScreen)
+            for _ in range(60):
+                await pilot.pause()
+                if not app.screen.state.running:
+                    break
+            assert "copied 0" in str(app.screen.query_one("#finished", Static).render())
+
+    run(scenario)
+    assert sorted(p.name for p in folder.iterdir()) == before
+
+
+def test_an_unnamed_new_event_stays_on_the_card(
+    digicam: Path, archive: Path, fake_handbrake: Path
+) -> None:
+    """Only the named event is copied; the other one is left alone."""
+
+    async def scenario() -> None:
+        app = make_app(digicam, archive, handbrake=fake_handbrake)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            screen = app.screen
+            screen.query_one("#name-input", Input).value = "Uni Friends Hangout"
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("ctrl+t")
+            await pilot.pause()
+            # a notice first, saying the other event stays where it is
+            assert "stay on the card" in app.screen.title_text
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, TransferScreen)
+            await pilot.pause()
+            await pilot.pause()
+            finished = str(app.screen.query_one("#finished", Static).render())
+            assert "copied" in finished and "failed" not in finished
+            names = sorted(p.name for p in (archive / "26-08").iterdir())
+            assert names == ["26-08-23 Uni Friends Hangout"]
+
+    run(scenario)
+
+
+def test_no_adopt_ignores_the_archive(digicam: Path, archive: Path) -> None:
+    """--no-adopt keeps the old behaviour: ask before writing to a folder."""
+    folder = archived_event(digicam, archive, 0, "Uni Friends Hangout")
+
+    async def scenario() -> None:
+        app = make_app(digicam, archive)
+        app.opts.no_adopt = True
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            screen = app.screen
+            screen.query_one("#name-input", Input).value = "Uni Friends Hangout"
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("alt+down")
+            await pilot.pause()
+            screen.query_one("#name-input", Input).value = "Second Evening"
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("ctrl+t")
+            await pilot.pause()
+            await pilot.pause()
+            assert isinstance(app.screen, Choice)
+
+    run(scenario)
+    assert folder.exists()
+
+
+def test_a_split_after_the_fact_moves_files_after_saying_so(
+    digicam: Path, archive: Path, fake_handbrake: Path
+) -> None:
+    """The archive is changed only after the preview, and never silently."""
+    folder = archived_event(digicam, archive, 0, "Whole day")
+    before = names_in(folder)
+
+    async def scenario() -> None:
+        app = make_app(digicam, archive, handbrake=fake_handbrake)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            # split the archived event in two, and name both halves
+            screen = app.screen
+            assert isinstance(screen, PartitionScreen)
+            assert screen.query_one("#events", Tree).root.children[0].label
+            app.plan.split_before(1)
+            for event, name in zip(
+                app.plan.events(), ("Whole day", "Evening", "Later"), strict=True
+            ):
+                app.plan.set_name(event, name)
+            screen._rebuild(keep=0)
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            await pilot.press("ctrl+t")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, Choice):
+                    break
+            assert isinstance(app.screen, Choice)
+            assert "change" in app.screen.message_text
+            await pilot.click("#go")
+            for _ in range(60):
+                await pilot.pause()
+                if isinstance(app.screen, TransferScreen) and not app.screen.state.running:
+                    break
+            assert isinstance(app.screen, TransferScreen)
+            for _ in range(20):
+                await pilot.pause()
+
+    run(scenario)
+    # the first half keeps its own photo, everything else went to the new folder
+    assert names_in(folder) == {"DSCF0001.JPG"}
+    evening = archive / "26-08" / "26-08-23 Evening"
+    assert names_in(evening) == before - {"DSCF0001.JPG"}
+    # and the run wrote down what it moved
+    assert list((archive / ".digicam").glob("changes-*.json"))
+
+
+def test_declining_the_change_leaves_the_archive_alone(
+    digicam: Path, archive: Path, fake_handbrake: Path
+) -> None:
+    folder = archived_event(digicam, archive, 0, "Whole day")
+    before = names_in(folder)
+
+    async def scenario() -> None:
+        app = make_app(digicam, archive, handbrake=fake_handbrake)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.plan.split_before(1)
+            for event, name in zip(
+                app.plan.events(), ("Whole day", "Evening", "Later"), strict=True
+            ):
+                app.plan.set_name(event, name)
+            app.screen._rebuild(keep=0)
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            await pilot.press("ctrl+t")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, Choice):
+                    break
+            assert isinstance(app.screen, Choice)
+            await pilot.click("#stop")
+            await pilot.pause()
+            assert isinstance(app.screen, NameScreen)
+            assert app.restructure is None
+
+    run(scenario)
+    assert names_in(folder) == before
+    assert not (archive / "26-08" / "26-08-23 Evening").exists()
+
+
+def test_strict_copies_new_files_but_moves_nothing(
+    digicam: Path, archive: Path, fake_handbrake: Path
+) -> None:
+    """--strict means the script gets told, not that the tool stops working."""
+    folder = archived_event(digicam, archive, 0, "Whole day")
+    before = names_in(folder)
+
+    async def scenario() -> None:
+        app = make_app(digicam, archive, handbrake=fake_handbrake, strict=True)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.plan.split_before(1)
+            for event, name in zip(
+                app.plan.events(), ("Whole day", "Evening", "Later"), strict=True
+            ):
+                app.plan.set_name(event, name)
+            app.screen._rebuild(keep=0)
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            await pilot.press("ctrl+t")
+            for _ in range(60):
+                await pilot.pause()
+                if isinstance(app.screen, TransferScreen) and not app.screen.state.running:
+                    break
+            # no question asked, the run just gets on with it
+            assert not isinstance(app.screen, Choice)
+            assert app.strict_refused
+            assert app.restructure is None
+
+    run(scenario)
+    # every archived file stayed where it was, and nothing new was moved
+    assert names_in(folder) == before
+    assert not (archive / "26-08" / "26-08-23 Evening").exists()
+    assert not list((archive / ".digicam").glob("changes-*.json"))
+
+
+def test_the_archive_is_asked_for_before_the_events(digicam: Path) -> None:
+    """No -a on the command line, so the first thing on screen is the question."""
+    archive = digicam.parent / "archive-elsewhere"
+    archive.mkdir()
+
+    async def scenario() -> None:
+        app = make_app(digicam)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, ArchiveDir)
+            app.screen.query_one("#field", Input).value = str(archive)
+            await pilot.click("#ok")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, PartitionScreen):
+                    break
+            assert isinstance(app.screen, PartitionScreen)
+            assert app.archive == archive
+
+    run(scenario)
+
+
+def test_cancelling_the_archive_question_still_works(digicam: Path) -> None:
+    """Saying no means nothing is adopted, not that the run stops."""
+
+    async def scenario() -> None:
+        app = make_app(digicam)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, ArchiveDir)
+            await pilot.press("escape")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, PartitionScreen):
+                    break
+            assert isinstance(app.screen, PartitionScreen)
+            assert app.archive is None
+            assert app.adopts  # it was asked for
+            assert not app.archive_known
+            # the badges stay out of the way when there is nothing to match
+            screen = app.screen
+            labels = [
+                str(child.label) for child in screen.query_one("#events", Tree).root.children
+            ]
+            assert not any("archive" in label for label in labels)
+
+    run(scenario)

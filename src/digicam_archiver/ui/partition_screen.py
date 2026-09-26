@@ -14,6 +14,7 @@ from textual.widgets.tree import TreeNode
 
 from ..model import Event, format_range, human_size
 from ..partition import Plan
+from ..reconcile import MatchKind
 from .widgets import NodeRef, PreviewPane, gap_text
 
 GAP_STEP = timedelta(minutes=15)
@@ -21,6 +22,15 @@ GAP_STEP = timedelta(minutes=15)
 STYLE_EVENT = "bold"
 STYLE_EXCLUDED = "dim italic"
 STYLE_NAMED = "bold green"
+
+#: what the archive already holds for an event, in the tree label
+BADGES: dict[MatchKind, tuple[str, str]] = {
+    MatchKind.MATCHED: ("[in the archive]", "dim green"),
+    MatchKind.PARTIAL: ("[partly there]", "dim yellow"),
+    MatchKind.SPLIT: ("[was one event, now two]", "yellow"),
+    MatchKind.MERGE: ("[was two events, now one]", "yellow"),
+    MatchKind.AMBIGUOUS: ("[which folder is this?]", "bold red"),
+}
 
 
 class PartitionScreen(Screen):
@@ -83,6 +93,26 @@ class PartitionScreen(Screen):
         self._rebuild(keep=0)
         if not self._event_nodes:
             self._say("no photos or videos found", warn=True)
+        elif self.app.archive_known:
+            self.run_worker(self._load_archive(), name="archive", group="archive")
+
+    async def _load_archive(self) -> None:
+        """Read the archive, then show which events are already in it."""
+        self._say("reading the archive to see what is in there already...")
+        try:
+            await self.app.load_index(on_progress=self._index_progress)
+        except OSError as exc:
+            self._say(f"could not read the archive: {exc}", warn=True)
+            return
+        archived = sum(1 for e in self.plan.events() if self.app.adoption_of(e))
+        if not archived:
+            self._say("nothing in the archive matches these events, they are all new")
+            return
+        self._rebuild(keep=self._current_start())
+        self._say(f"{archived} of {len(self.plan.events())} events are already archived")
+
+    def _index_progress(self, done: int, total: int) -> None:
+        self._say(f"reading the archive, {done} of {total} photos")
 
     # ------------------------------------------------------------------ tree
 
@@ -104,9 +134,25 @@ class PartitionScreen(Screen):
             label.append(f"   {name}", style=STYLE_NAMED)
         if excluded:
             label.append("   [skipped]", style="dim yellow")
+        badge = self._badge(event)
+        if badge is not None:
+            text, style = badge
+            label.append(f"   {text}", style=style)
         return label
 
+    def _badge(self, event: Event) -> tuple[str, str] | None:
+        """The archive badge, or None when there is nothing worth saying."""
+        if not self.app.archive_known or self.plan.is_excluded(event):
+            return None
+        archived = self.app.reconcile.of(event)
+        badge = BADGES.get(archived.kind)
+        if badge is not None and not archived.home:
+            # files are in the archive but no folder can be this event's home
+            return ("[partly here, name it to split the folder]", "dim yellow")
+        return badge
+
     def _rebuild(self, keep: int | None = None) -> None:
+        self.app.refresh_reconcile()
         tree = self.query_one("#events", Tree)
         selected = keep if keep is not None else self._current_start()
         tree.clear()
@@ -122,10 +168,15 @@ class PartitionScreen(Screen):
         tree.focus()
         # node line numbers only exist once the tree has laid itself out
         self.call_after_refresh(self._apply_selection)
-        self._say(
-            f"{len(self.plan.events())} events, "
-            f"{len(self.plan.included())} to archive, gap {gap_text(self.plan.gap)}"
-        )
+        parts = [
+            f"{len(self.plan.events())} events",
+            f"{len(self.plan.included())} to archive",
+        ]
+        if self.app.archive_known:
+            archived = sum(1 for e in self.plan.events() if self.app.adoption_of(e))
+            parts.append(f"{archived} already archived")
+        parts.append(f"gap {gap_text(self.plan.gap)}")
+        self._say(", ".join(parts))
 
     def _apply_selection(self) -> None:
         start = self._pending_select

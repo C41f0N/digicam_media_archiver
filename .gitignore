@@ -4,3 +4,4 @@
 __pycache__/
 *.pyc
 src/__pycache__/
+src/digicam_archiver/__pycache__/

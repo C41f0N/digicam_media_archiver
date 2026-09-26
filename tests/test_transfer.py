@@ -317,16 +317,8 @@ def test_transfer_of_an_empty_plan(tmp_path: Path) -> None:
     assert result.copied == 0
 
 
-def test_end_to_end_from_a_real_card(
-    digicam: Path, archive: Path, fake_handbrake: Path
-) -> None:
-    """Scan, name, copy: the whole path with a real jpeg and a real avi."""
-    plan = Plan(source=digicam, files=scan(digicam))
-    events = plan.events()
-    assert len(events) == 2
-    plan.set_name(events[0], "Uni Friends Hangout")
-    plan.set_name(events[1], "Second day")
-
+def archive_the_plan(plan: Plan, archive: Path) -> list[TransferJob]:
+    """Name every event and work out where its files go, as the transfer does."""
     jobs = []
     for event in plan.included():
         target = archive / "26-08" / f"{event.taken_start:%y-%m-%d} {plan.name_of(event)}"
@@ -337,7 +329,20 @@ def test_end_to_end_from_a_real_card(
                 items=tuple(build_items(target, event.files)),
             )
         )
+    return jobs
 
+
+def test_end_to_end_from_a_real_card(
+    digicam: Path, archive: Path, fake_handbrake: Path
+) -> None:
+    """Scan, name, copy: the whole path with a real jpeg and a real avi."""
+    plan = Plan(source=digicam, files=scan(digicam))
+    events = plan.events()
+    assert len(events) == 2
+    plan.set_name(events[0], "Uni Friends Hangout")
+    plan.set_name(events[1], "Second day")
+
+    jobs = archive_the_plan(plan, archive)
     result = asyncio.run(Transfer(jobs, handbrake=str(fake_handbrake)).run())
     assert result.ok
     first = archive / "26-08" / "26-08-23 Uni Friends Hangout"
@@ -351,6 +356,60 @@ def test_end_to_end_from_a_real_card(
     assert [p.name for p in second.iterdir()] == ["DSCF0004.JPG"]
     # the card is left exactly as it was
     assert (digicam / "DCIM" / "103_FUJI" / "DSCF0003.AVI").exists()
+
+
+def test_a_second_run_over_the_same_card_copies_nothing(
+    digicam: Path, archive: Path, fake_handbrake: Path
+) -> None:
+    """The rerun case: same card, same archive, nothing duplicated, no re-encode."""
+    plan = Plan(source=digicam, files=scan(digicam))
+    for event, name in zip(plan.events(), ("Uni Friends Hangout", "Second day"), strict=True):
+        plan.set_name(event, name)
+    first_run = asyncio.run(
+        Transfer(archive_the_plan(plan, archive), handbrake=str(fake_handbrake)).run()
+    )
+    assert first_run.ok
+    before = {path: path.read_bytes() for path in sorted(archive.rglob("*")) if path.is_file()}
+
+    second_plan = Plan(source=digicam, files=scan(digicam))
+    for event, name in zip(
+        second_plan.events(), ("Uni Friends Hangout", "Second day"), strict=True
+    ):
+        second_plan.set_name(event, name)
+    second_run = asyncio.run(
+        Transfer(archive_the_plan(second_plan, archive), handbrake=str(fake_handbrake)).run()
+    )
+    assert second_run.ok
+    assert second_run.copied == 0
+    assert second_run.skipped == 5
+    assert {
+        path: path.read_bytes() for path in sorted(archive.rglob("*")) if path.is_file()
+    } == before
+
+
+def test_a_rerun_recovers_from_a_half_finished_event(
+    digicam: Path, archive: Path, fake_handbrake: Path
+) -> None:
+    """Three of five files made it; the rest are copied, none is doubled."""
+    plan = Plan(source=digicam, files=scan(digicam))
+    plan.set_name(plan.events()[0], "Uni Friends Hangout")
+    target = archive / "26-08" / "26-08-23 Uni Friends Hangout"
+    copy_photo(plan.events()[0].files[0].path, target / "DSCF0001.JPG")
+    copy_photo(plan.events()[0].files[1].path, target / "DSCF0002.JPG")
+
+    jobs = [TransferJob("One", target, tuple(build_items(target, plan.events()[0].files)))]
+    result = asyncio.run(Transfer(jobs, handbrake=str(fake_handbrake)).run())
+    assert result.ok
+    assert result.copied == 2
+    assert result.skipped == 2
+    # the two that were already there kept their names, the duplicate photo from
+    # the other card folder still needs its own, so this is the clean run's result
+    assert sorted(p.name for p in target.iterdir()) == [
+        "DSCF0001.JPG",
+        "DSCF0001_1.JPG",
+        "DSCF0002.JPG",
+        "DSCF0003.mp4",
+    ]
 
 
 def test_job_helpers(tmp_path: Path) -> None:

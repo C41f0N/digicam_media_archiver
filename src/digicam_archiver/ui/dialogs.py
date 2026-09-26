@@ -210,11 +210,11 @@ class ArchiveDir(Dialog):
         self._submit(self.query_one("#field", Input).value)
 
     def _submit(self, raw: str) -> None:
-        text = raw.strip().expanduser()
+        text = raw.strip()
         if not text:
             self.query_one("#error", Static).update("give me a directory")
             return
-        path = Path(text)
+        path = Path(text).expanduser()
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:

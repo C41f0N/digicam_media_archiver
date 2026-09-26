@@ -15,7 +15,8 @@ from ..layout import event_dir
 from ..model import Event, format_date, format_range
 from ..naming import sanitize
 from ..partition import Plan
-from .dialogs import ArchiveDir, Notice
+from .dialogs import ArchiveDir, Choice, Notice
+from .partition_screen import BADGES
 from .widgets import PreviewPane
 
 
@@ -117,14 +118,36 @@ class NameScreen(Screen):
             self._rebuilding = False
 
     def _label_text(self, event: Event) -> Text:
-        name = self.plan.name_of(event)
+        name = self.plan.name_of(event) or self.adopted_name(event)
         label = Text()
         label.append(f"{format_range(event)}\n", style="dim")
-        label.append(
-            f"  {name}" if name else "  (not named yet)",
-            style="bold green" if name else "dim italic",
-        )
+        if name:
+            label.append(f"  {name}", style="bold green")
+            if not self.plan.name_of(event):
+                label.append("  (from the archive)", style="dim green")
+        else:
+            label.append("  (not named yet, it will stay on the card)", style="dim italic")
+        badge = self._badge(event)
+        if badge is not None:
+            text, style = badge
+            label.append(f"\n  {text}", style=style)
         return label
+
+    def adopted_name(self, event: Event) -> str:
+        """The name the archive already uses, which the user can override."""
+        return self.app.adoption_of(event) if self.app.archive_known else ""
+
+    def _badge(self, event: Event) -> tuple[str, str] | None:
+        if not self.app.archive_known:
+            return None
+        badge = BADGES.get(self.app.reconcile.of(event).kind)
+        if badge is None:
+            return None
+        text, style = badge
+        archived = self.app.reconcile.of(event)
+        if len(archived.present) < len(event.files):
+            return (f"{text}, {len(archived.present)} of {len(event.files)} there", style)
+        return badge
 
     def _refresh_label(self, position: int) -> None:
         """Repaint one row, not the whole list: the list can be very long."""
@@ -149,7 +172,13 @@ class NameScreen(Screen):
         event = self._events[position]
         field = self.query_one("#name-input", Input)
         existing = self.plan.name_of(event)
-        field.value = existing if existing is not None else f"{format_date(event.taken_start)} "
+        adopted = self.adopted_name(event)
+        if existing is not None:
+            field.value = existing
+        elif adopted:
+            field.value = adopted
+        else:
+            field.value = f"{format_date(event.taken_start)} "
         field.cursor_position = len(field.value)
         self._show_destination(event)
         self._photo = 0
@@ -199,7 +228,12 @@ class NameScreen(Screen):
         if archive is None:
             target.update(Text("archive directory not chosen yet", style="dim"))
             return
-        name = self.plan.name_of(event) or "<not named yet>"
+        if self.app.archive_known:
+            home = self.app.reconcile.of(event).home
+            if home is not None:
+                target.update(Text(f"goes to {home} (already there)", style="dim green"))
+                return
+        name = self.plan.name_of(event) or self.adopted_name(event) or "<not named yet>"
         target.update(
             Text(
                 f"goes to {event_dir(archive, event.taken_start, sanitize(name))}", style="dim"
@@ -287,17 +321,22 @@ class NameScreen(Screen):
     def action_to_transfer(self) -> None:
         self.run_worker(self._to_transfer(), name="to-transfer", exclusive=True)
 
+    def _left_behind(self) -> list[Event]:
+        """Unnamed events that stay on the card, which is what was asked for."""
+        behind = []
+        for event in self._events:
+            if self.plan.name_of(event):
+                continue
+            if self.app.archive_known and self.app.reconcile.of(event).home is not None:
+                continue  # the archive holds this one already
+            behind.append(event)
+        return behind
+
     async def _to_transfer(self) -> None:
         from .transfer_screen import TransferScreen
 
-        unnamed = [event for event in self._events if not self.plan.name_of(event)]
-        if unnamed:
-            self._say(
-                f"{len(unnamed)} event(s) still unnamed: put the cursor on one and type a name",
-                warn=True,
-            )
-            return
         if self.app.dry_run:
+            await self.app.load_index()
             await self.app.push_screen_wait(
                 Notice("Dry run, nothing was copied", self._dry_run_text())
             )
@@ -308,15 +347,80 @@ class NameScreen(Screen):
                 return
             self.app.archive = Path(chosen)
             self._say(f"archive: {self.app.archive}")
+        if self.app.reading_archive:
+            # the first screen may still be hashing the archive; copying before
+            # it finishes would put files in twice
+            self._say("still reading the archive...")
+            await self.app.load_index()
+            self._say(f"archive: {self.app.archive}")
+        behind = self._left_behind()
+        if len(behind) == len(self._events):
+            self._say("every event is still unnamed, name one to copy something", warn=True)
+            return
+        if behind:
+            await self.app.push_screen_wait(
+                Notice(
+                    f"{len(behind)} event(s) stay on the card",
+                    "\n".join(format_range(event) for event in behind)
+                    + "\n\nthey are not named, so nothing will be copied for them",
+                )
+            )
+        if not await self._agree_to_the_changes():
+            return
         self.app.push_screen(TransferScreen(self.plan, Path(self.app.archive)))
+
+    async def _agree_to_the_changes(self) -> bool:
+        """Show what the archive would have to change, then ask."""
+        from ..restructure import asks_for_a_decision, describe
+
+        change = self.app.preview_restructure()
+        if change.is_empty:
+            self.app.restructure = None
+            return True
+        if self.app.strict:
+            # --strict says: never move what the archive already holds.  Copying
+            # new files in is fine, it only ever adds, so the run carries on.
+            self.app.restructure = None
+            self.app.strict_refused = True
+            self._say(
+                "strict: the archive keeps its files where they are, only new files are copied",
+                warn=True,
+            )
+            return True
+        choice = await self.app.push_screen_wait(
+            Choice(
+                "The archive has to change"
+                if not asks_for_a_decision(change)
+                else "Careful: the archive has to change",
+                [
+                    ("Go ahead", "go"),
+                    ("Leave the archive alone", "stop"),
+                ],
+                detail=describe(change),
+            )
+        )
+        self.app.restructure = change if choice == "go" else None
+        if choice != "go":
+            self._say("the archive stays as it is, only copying new files", warn=True)
+        return choice == "go"
 
     def _dry_run_text(self) -> str:
         from ..layout import event_dir as target_of
+        from ..restructure import describe
 
         archive = self.archive or Path("?")
         lines = [f"archive would be {archive}", ""]
         for event in self._events:
-            name = self.plan.name_of(event) or "?"
+            if self.app.archive_known:
+                home = self.app.reconcile.of(event).home
+                if home is not None:
+                    there = len(self.app.reconcile.of(event).present)
+                    lines.append(f"{home}  (already has {there} of {len(event.files)})")
+                    continue
+            name = self.plan.name_of(event) or self.adopted_name(event) or "?"
             lines.append(f"{target_of(archive, event.taken_start, name)}")
             lines.append(f"    {len(event.files)} files, {len(event.videos)} videos")
+        change = self.app.preview_restructure()
+        if not change.is_empty:
+            lines += ["", "the archive would change:", describe(change)]
         return "\n".join(lines)

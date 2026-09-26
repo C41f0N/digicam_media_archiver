@@ -102,6 +102,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="compare sha256 of every copied photo, slow but certain",
     )
     parser.add_argument(
+        "--no-adopt",
+        action="store_true",
+        help=(
+            "ignore what the archive already holds: every event gets a fresh "
+            "folder and existing folders are asked about, the old behaviour"
+        ),
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "never move files the archive already holds.  New files are still "
+            "copied, since that only adds; with --print-plan it also exits 2 "
+            "when the archive would have to change or a folder holds files the "
+            "card does not account for"
+        ),
+    )
+    parser.add_argument(
         "--print-plan",
         action="store_true",
         help="print the partitioning as text and exit, no interface",
@@ -152,6 +170,47 @@ def print_plan(plan: Plan, stream=None) -> None:
         print(line, file=stream)
 
 
+def print_rerun(plan: Plan, archive: Path, stream=None) -> int:
+    """Say what the archive already holds, and what a run would change.
+
+    Returns the number of things worth stopping for, so ``--strict`` can turn
+    them into an error instead of a question.
+    """
+    from .reconcile import build_index, reconcile
+    from .restructure import describe, plan_restructure
+
+    stream = sys.stdout if stream is None else stream
+    if not archive.is_dir():
+        print(f"{archive}: no such archive directory, everything is new", file=stream)
+        return 0
+    index = build_index(archive, plan)
+    answer = reconcile(plan, index)
+    print(f"archive {archive}: {len(index.folders)} event folder(s)", file=stream)
+    for event in plan.events():
+        archived = answer.of(event)
+        state = archived.kind.value
+        if archived.home is not None:
+            state += f" {archived.home.name}"
+        if archived.present:
+            state += f", {len(archived.present)} of {len(event.files)} there"
+        elif not archived.home:
+            state += ", nothing there"
+        print(f"  {event.taken_start:%a %d.%m.%Y %H:%M}  {state}", file=stream)
+    for folder, names in sorted(answer.strangers_by_folder().items()):
+        print(
+            f"  ! {folder.name} has files no event accounts for: {', '.join(names)}",
+            file=stream,
+        )
+    change = plan_restructure(plan, index, answer, archive)
+    if change.is_empty:
+        print("  the archive would stay as it is", file=stream)
+    else:
+        print("  the archive would change:", file=stream)
+        for line in describe(change).splitlines():
+            print(f"    {line}", file=stream)
+    return len(answer.strangers) + (0 if change.is_empty else 1)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -164,6 +223,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.print_plan:
         print_plan(plan)
+        if args.archive and not args.no_adopt:
+            concerns = print_rerun(plan, args.archive)
+            if args.strict and concerns:
+                print("strict: the archive would have to change", file=sys.stderr)
+                return 2
         return 0
 
     from .ui.app import ArchiverApp
@@ -182,6 +246,12 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
     )
     app.run()
+    if app.strict_refused:
+        print(
+            "strict: left the archive as it was, moved nothing",
+            file=sys.stderr,
+        )
+        return 2
     return 0
 
 

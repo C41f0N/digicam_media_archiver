@@ -6,9 +6,18 @@ from pathlib import Path
 
 import pytest
 
-from digicam_archiver.cli import build_parser, check_source, main, parse_gap, print_plan
+from digicam_archiver.cli import (
+    build_parser,
+    check_source,
+    main,
+    parse_gap,
+    print_plan,
+    print_rerun,
+)
+from digicam_archiver.layout import build_items, event_dir
 from digicam_archiver.partition import Plan
 from digicam_archiver.scan import scan
+from digicam_archiver.transfer import copy_photo
 
 
 @pytest.mark.parametrize(
@@ -117,3 +126,88 @@ def test_help_mentions_the_keys(capsys) -> None:
     out = capsys.readouterr().out
     assert "split before the highlighted file" in out
     assert "26-08-23" in out
+
+
+# --------------------------------------------------------------------- reruns
+
+
+def test_print_plan_says_what_the_archive_already_has(
+    digicam: Path, archive: Path, capsys
+) -> None:
+    plan = Plan(source=digicam, files=scan(digicam))
+    folder = event_dir(archive, plan.events()[0].taken_start, "Uni Friends Hangout")
+    folder.mkdir(parents=True)
+    for item in build_items(folder, plan.events()[0].files):
+        if not item.is_video:
+            copy_photo(item.source, item.dest)
+
+    print_rerun(plan, archive)
+    out = capsys.readouterr().out
+    assert "1 event folder(s)" in out
+    assert "partial 26-08-23 Uni Friends Hangout" in out
+    assert "3 of 4 there" in out
+    assert "the archive would stay as it is" in out
+
+
+def test_print_plan_says_what_a_split_would_move(digicam: Path, archive: Path, capsys) -> None:
+    plan = Plan(source=digicam, files=scan(digicam))
+    folder = event_dir(archive, plan.events()[0].taken_start, "Whole day")
+    folder.mkdir(parents=True)
+    for item in build_items(folder, plan.events()[0].files):
+        if not item.is_video:
+            copy_photo(item.source, item.dest)
+    plan.split_before(2)
+    for event, name in zip(plan.events(), ("Whole day", "Evening", "Later"), strict=True):
+        plan.set_name(event, name)
+
+    concerns = print_rerun(plan, archive)
+    out = capsys.readouterr().out
+    assert concerns == 1
+    assert "the archive would change" in out
+    assert "move DSCF0001_1.JPG: 26-08-23 Whole day -> 26-08-23 Evening" in out
+
+
+def test_strict_turns_a_rerun_question_into_an_error(
+    digicam: Path, archive: Path, capsys
+) -> None:
+    plan = Plan(source=digicam, files=scan(digicam))
+    folder = event_dir(archive, plan.events()[0].taken_start, "Whole day")
+    folder.mkdir(parents=True)
+    for item in build_items(folder, plan.events()[0].files):
+        if not item.is_video:
+            copy_photo(item.source, item.dest)
+
+    assert main([str(digicam), "--print-plan", "-a", str(archive)]) == 0
+    assert "the archive would stay as it is" in capsys.readouterr().out
+    assert main([str(digicam), "--print-plan", "-a", str(archive), "--strict"]) == 0
+
+
+def test_strict_stops_when_the_archive_would_change(
+    digicam: Path, archive: Path, capsys
+) -> None:
+    plan = Plan(source=digicam, files=scan(digicam))
+    folder = event_dir(archive, plan.events()[0].taken_start, "Whole day")
+    folder.mkdir(parents=True)
+    (folder / "scan0001.jpg").write_bytes(b"put there by hand")
+    copy_photo(plan.events()[0].files[0].path, folder / "DSCF0001.JPG")
+
+    code = main([str(digicam), "--print-plan", "-a", str(archive), "--strict"])
+    assert code == 2
+    assert "strict" in capsys.readouterr().err
+
+
+def test_no_adopt_keeps_the_archive_out_of_the_print_plan(
+    digicam: Path, archive: Path, capsys
+) -> None:
+    assert main([str(digicam), "--print-plan", "-a", str(archive), "--no-adopt"]) == 0
+    out = capsys.readouterr().out
+    assert "event folder(s)" not in out
+    assert "5 files from" in out
+
+
+def test_print_rerun_on_an_archive_that_is_not_there(
+    tmp_path: Path, digicam: Path, capsys
+) -> None:
+    plan = Plan(source=digicam, files=scan(digicam))
+    assert print_rerun(plan, tmp_path / "nowhere") == 0
+    assert "everything is new" in capsys.readouterr().out
