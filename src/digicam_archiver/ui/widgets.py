@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -88,6 +89,12 @@ class PreviewPane(Vertical):
         self._token = 0
         self._meta_value = ""
         self._note = ""
+        # one thread, one queued job: holding an arrow key must not pile up
+        # decodes, and a stale frame is never worth showing
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="preview")
+        self._busy = False
+        self._queued: tuple[Path, bool, int, int, int] | None = None
+        self._warm: tuple[Path, bool, int, int, int] | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("", classes="meta", id="preview-meta")
@@ -104,6 +111,12 @@ class PreviewPane(Vertical):
     def on_mount(self) -> None:
         self._image.update(Text("nothing selected", style="dim"))
 
+    def on_unmount(self) -> None:
+        self._token += 1
+        self._queued = None
+        self._warm = None
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
     def on_resize(self) -> None:
         if self._path is not None:
             self._render_current()
@@ -111,17 +124,21 @@ class PreviewPane(Vertical):
     def clear(self, message: str = "nothing selected") -> None:
         self._path = None
         self._token += 1
+        self._queued = None
         self._meta_value = ""
         self._note = ""
         self._meta.update("")
         self._image.update(Text(message, style="dim"))
 
-    def show_file(self, item: MediaFile, extra: str = "") -> None:
+    def show_file(self, item: MediaFile, extra: str = "", position: str = "") -> None:
         self._path = item.path
         self._is_video = item.is_video
+        second = f"{human_size(item.size)}   {item.path.parent.name}"
+        if position:
+            second += f"   {position}"
         lines = [
             f"{item.name}   {item.taken:%y-%m-%d %H:%M:%S} ({item.stamp_source})",
-            f"{human_size(item.size)}   {item.path.parent.name}",
+            second,
         ]
         if extra:
             lines.append(extra)
@@ -134,6 +151,15 @@ class PreviewPane(Vertical):
         self._set_meta(meta)
         self._render_current()
 
+    def warm(self, item: MediaFile) -> None:
+        """Get ready for a file the user is about to reach, if nothing else waits."""
+        size = self._image.size
+        cols, rows = int(size.width), int(size.height)
+        if cols < 4 or rows < 2:
+            return
+        self._warm = (item.path, item.is_video, cols, rows, self._token + 1)
+        self._pump()
+
     def _set_meta(self, value: str) -> None:
         """Always three lines, so the image area below never jumps around."""
         self._meta_value = value
@@ -142,37 +168,67 @@ class PreviewPane(Vertical):
             lines.append("")
         self._meta.update("\n".join(lines[:3]))
 
+    def _box(self) -> tuple[int, int] | None:
+        size = self._image.size
+        cols, rows = int(size.width), int(size.height)
+        return None if cols < 4 or rows < 2 else (cols, rows)
+
     def _render_current(self) -> None:
         path = self._path
         if path is None:
             return
-        size = self._image.size
-        cols, rows = int(size.width), int(size.height)
-        if cols < 4 or rows < 2:
+        box = self._box()
+        if box is None:
             return
         self._token += 1
-        token = self._token
-        self.run_worker(
-            self._render_in_background(path, self._is_video, cols, rows, token),
-            name="preview",
-            group="preview",
-            exclusive=True,
-        )
+        self._warm = None
+        self._queued = (path, self._is_video, box[0], box[1], self._token)
+        self._pump()
 
-    async def _render_in_background(
-        self, path: Path, is_video: bool, cols: int, rows: int, token: int
-    ) -> None:
-        try:
-            result = await asyncio.to_thread(
-                render_media, path, cols, rows, self.colour, is_video, self.frame_fraction
-            )
-        except PreviewError as exc:
-            self._publish(Text(str(exc), style="bold red"), token, path)
+    def _pump(self) -> None:
+        if self._busy or not self.is_mounted:
             return
-        except OSError as exc:
-            self._publish(Text(f"cannot read file: {exc}", style="red"), token, path)
+        job = self._queued if self._queued is not None else self._warm
+        if job is None:
             return
-        self._publish(result.text, token, path, note=result.note)
+        if job is self._queued:
+            self._queued = None
+        else:
+            self._warm = None
+        self._busy = True
+        path, is_video, cols, rows, token = job
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(
+            self._executor,
+            render_media,
+            path,
+            cols,
+            rows,
+            self.colour,
+            is_video,
+            self.frame_fraction,
+        )
+        future.add_done_callback(lambda done: self._finished(done, path, token))
+
+    def _finished(self, future, path: Path, token: int) -> None:
+        self._busy = False
+        if future.cancelled():
+            return
+        wanted = token == self._token and path == self._path
+        error = future.exception()
+        if error is None and wanted:
+            result = future.result()
+            self._publish(result.text, token, path, note=result.note)
+        elif error is not None and wanted:
+            self._publish(self._error_text(error), token, path)
+        self._pump()
+
+    def _error_text(self, error: BaseException) -> Text:
+        if isinstance(error, PreviewError):
+            return Text(str(error), style="bold red")
+        if isinstance(error, OSError):
+            return Text(f"cannot read file: {error}", style="red")
+        return Text(f"preview failed: {error}", style="red")
 
     def _publish(self, text: Text, token: int, path: Path, note: str = "") -> None:
         if token != self._token or path != self._path:

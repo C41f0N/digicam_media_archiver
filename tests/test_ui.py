@@ -17,6 +17,7 @@ from digicam_archiver.ui.dialogs import Choice
 from digicam_archiver.ui.name_screen import NameScreen
 from digicam_archiver.ui.partition_screen import PartitionScreen
 from digicam_archiver.ui.transfer_screen import TransferScreen
+from digicam_archiver.ui.widgets import PreviewPane
 
 SIZE = (120, 40)
 
@@ -236,6 +237,104 @@ def test_naming_an_event(digicam: Path, archive: Path) -> None:
             assert app.plan.name_of(app.plan.included()[0]) == "Uni Friends Hangout"
             assert screen.query_one("#name-input", Input).value == "26-08-24 "
             assert "26-08" in str(screen.query_one("#destination", Static).render())
+
+    run(scenario)
+
+
+def test_naming_steps_through_every_photo(digicam: Path, archive: Path) -> None:
+    async def scenario() -> None:
+        app = make_app(digicam, archive)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, NameScreen)
+            meta = screen.query_one("#preview-meta", Static)
+            assert "1/4" in str(meta.render())
+            await pilot.press("alt+right")
+            await pilot.pause()
+            assert "2/4" in str(meta.render())
+            assert "DSCF0002.JPG" in str(meta.render())
+            await pilot.press("pagedown")
+            await pilot.pause()
+            assert "3/4" in str(meta.render())
+            assert "DSCF0003.AVI" in str(meta.render())
+            await pilot.press("alt+end")
+            await pilot.pause()
+            assert "4/4" in str(meta.render())
+            assert "1 video" in str(meta.render())
+            await pilot.press("pagedown")
+            await pilot.pause()
+            assert "last photo" in str(screen.query_one("#status", Static).render())
+            await pilot.press("alt+home")
+            await pilot.pause()
+            assert "1/4" in str(meta.render())
+            await pilot.press("pageup")
+            await pilot.pause()
+            assert "first photo" in str(screen.query_one("#status", Static).render())
+
+    run(scenario)
+
+
+def test_naming_keeps_the_photo_when_the_event_changes(digicam: Path, archive: Path) -> None:
+    async def scenario() -> None:
+        app = make_app(digicam, archive)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            screen = app.screen
+            meta = screen.query_one("#preview-meta", Static)
+            await pilot.press("alt+right", "alt+right")
+            await pilot.pause()
+            assert "3/4" in str(meta.render())
+            await pilot.press("alt+down")
+            await pilot.pause()
+            assert "1/1" in str(meta.render())
+            assert "DSCF0004.JPG" in str(meta.render())
+            await pilot.press("alt+up")
+            await pilot.pause()
+            assert "1/4" in str(meta.render())
+            assert isinstance(app.screen, NameScreen), "the command palette opened"
+
+    run(scenario)
+
+
+def test_naming_only_repaints_the_row_it_changed(digicam: Path, archive: Path) -> None:
+    async def scenario() -> None:
+        app = make_app(digicam, archive)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            screen = app.screen
+            view = screen.query_one("#names", ListView)
+            items = list(view.children)
+            screen.query_one("#name-input", Input).value = "Uni Friends Hangout"
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert list(view.children) == items, "the list was rebuilt for one name"
+            assert app.plan.name_of(app.plan.included()[0]) == "Uni Friends Hangout"
+            assert "Uni Friends Hangout" in str(items[0].children[0].render())
+
+    run(scenario)
+
+
+def test_the_preview_never_queues_more_than_one_render(digicam: Path, archive: Path) -> None:
+    async def scenario() -> None:
+        app = make_app(digicam, archive)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            pane = app.screen.query_one("#preview", PreviewPane)
+            first = app.plan.included()[0]
+            for index in range(8):
+                pane.show_file(first.files[index % len(first.files)], position=str(index))
+                assert pane._queued is None or pane._queued[0] == pane._path
+            await pilot.pause()
+            assert pane._busy or pane._queued is None
 
     run(scenario)
 

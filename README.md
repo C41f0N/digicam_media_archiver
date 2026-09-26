@@ -59,6 +59,11 @@ file count, the size and any name you already gave it. The right side shows the
 highlighted shot as ASCII art, or a still from the video. Videos are drawn from
 a frame about a fifth of the way in.
 
+The preview decodes in the background, one shot at a time, and a shot that has
+moved off the screen before it was finished is thrown away, so holding an arrow
+key never queues up work. The next event's first shot is warmed up while you
+read the current one, which is why moving down the list feels instant.
+
 | key | action |
 | --- | --- |
 | `up` `down` / `k` `j` | move |
@@ -82,14 +87,22 @@ the date, so typing over it is one keystroke.
 
 | key | action |
 | --- | --- |
-| `ctrl+n` / `ctrl+p` | next or previous event |
+| `alt+down` / `alt+up` | next or previous event (`ctrl+n` also goes down) |
+| `alt+left` / `alt+right` | older or newer photo in this event |
+| `pageup` / `pagedown` | the same, for keyboards without working alt keys |
+| `alt+home` / `alt+end` | first or last photo of the event |
 | `ctrl+s` | save the name you typed |
 | `ctrl+t` | start the copy |
 | `escape` | back to the events |
 | `q` | quit |
 
-The line under the field shows the folder the event will land in. A second event
+The photo keys walk through every file of the highlighted event, videos
+included, so you can check what actually landed in a group before naming it. The
+line under the field shows the folder the event will land in, and the second
+line of the preview shows which photo you are on, like `3/42`. A second event
 with the same date gets its own folder, never a merge.
+
+`ctrl+p` is the command palette, so it is not a shortcut here.
 
 ### 3. Copy and convert
 

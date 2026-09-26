@@ -107,8 +107,16 @@ def render_image(image: Image.Image, cols: int, rows: int, colour: bool = True) 
     return text
 
 
-def load_photo(path: Path) -> Image.Image:
+def load_photo(path: Path, max_pixels: tuple[int, int] | None = None) -> Image.Image:
+    """Open a photo, asking libjpeg for a smaller decode when we can.
+
+    ``draft`` makes the decoder scale the image down while it decodes, so a
+    twelve megapixel JPEG costs a fraction of the work.  The result is only
+    ever squashed into a few dozen characters, so the detail is wasted anyway.
+    """
     with Image.open(path) as img:
+        if max_pixels is not None and img.format == "JPEG":
+            img.draft("RGB", max_pixels)
         img.load()
         return ImageOps.exif_transpose(img) or img
 
@@ -213,7 +221,10 @@ def render_media(
     else:
         if path.stat().st_size > MAX_PREVIEW_BYTES:
             raise PreviewError("file too large to preview")
-        image = load_photo(path)
+        # square bound, four cells per side: libjpeg only halves, and the
+        # draft happens before the photo is turned upright
+        side = max(cols, rows, 8) * 4
+        image = load_photo(path, max_pixels=(side, side))
 
     result = RenderResult(
         text=render_image(image, cols, rows, colour=colour),

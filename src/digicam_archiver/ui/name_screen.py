@@ -55,9 +55,14 @@ class NameScreen(Screen):
     """
 
     BINDINGS = [
-        Binding("ctrl+n", "next", "Next event", show=False),
-        Binding("ctrl+p", "previous", "Previous event", show=False),
+        # ctrl+p is Textual's command palette, so the event hops live on alt
+        Binding("alt+down,ctrl+n", "next", "Next event"),
+        Binding("alt+up", "previous", "Previous event"),
         Binding("ctrl+s", "save", "Save name", show=False),
+        Binding("alt+left,pageup", "photo_previous", "Older photo"),
+        Binding("alt+right,pagedown", "photo_next", "Newer photo"),
+        Binding("alt+home", "photo_first", "First photo", show=False),
+        Binding("alt+end", "photo_last", "Last photo", show=False),
         Binding("ctrl+t", "to_transfer", "Start the copy"),
         Binding("escape", "back", "Back to events"),
         Binding("q", "quit", "Quit", show=False),
@@ -68,6 +73,8 @@ class NameScreen(Screen):
         self.plan = plan
         self._events: list[Event] = plan.included()
         self._rebuilding = False
+        self._photo = 0
+        self._labels: list[Label] = []
 
     @property
     def archive(self) -> Path | None:
@@ -99,19 +106,30 @@ class NameScreen(Screen):
     def _rebuild_list(self) -> None:
         view = self.query_one("#names", ListView)
         self._rebuilding = True
+        self._labels = []
         try:
             view.clear()
             for event in self._events:
-                name = self.plan.name_of(event)
-                label = Text()
-                label.append(f"{format_range(event)}\n", style="dim")
-                label.append(
-                    f"  {name}" if name else "  (not named yet)",
-                    style="bold green" if name else "dim italic",
-                )
-                view.append(ListItem(Label(label)))
+                label = Label(self._label_text(event))
+                self._labels.append(label)
+                view.append(ListItem(label))
         finally:
             self._rebuilding = False
+
+    def _label_text(self, event: Event) -> Text:
+        name = self.plan.name_of(event)
+        label = Text()
+        label.append(f"{format_range(event)}\n", style="dim")
+        label.append(
+            f"  {name}" if name else "  (not named yet)",
+            style="bold green" if name else "dim italic",
+        )
+        return label
+
+    def _refresh_label(self, position: int) -> None:
+        """Repaint one row, not the whole list: the list can be very long."""
+        if 0 <= position < len(self._labels):
+            self._labels[position].update(self._label_text(self._events[position]))
 
     def _position(self) -> int:
         index = self.query_one("#names", ListView).index
@@ -134,13 +152,46 @@ class NameScreen(Screen):
         field.value = existing if existing is not None else f"{format_date(event.taken_start)} "
         field.cursor_position = len(field.value)
         self._show_destination(event)
-        videos = len(event.videos)
-        extra = f"first of {len(event.files)} files"
-        if videos:
-            extra += f", {videos} video" + ("s" if videos != 1 else "")
-        self.query_one("#preview", PreviewPane).show_file(event.first, extra)
+        self._photo = 0
+        self._show_photo()
+        self._warm_next()
         named = sum(1 for item in self._events if self.plan.name_of(item))
         self._say(f"event {position + 1} of {len(self._events)}, {named} named")
+
+    def _pane(self) -> PreviewPane:
+        return self.query_one("#preview", PreviewPane)
+
+    def _show_photo(self) -> None:
+        event = self._current()
+        if event is None:
+            return
+        files = event.files
+        self._photo = max(0, min(self._photo, len(files) - 1))
+        videos = len(event.videos)
+        extra = f"{videos} video" + ("s" if videos != 1 else "") if videos else ""
+        self._pane().show_file(
+            files[self._photo],
+            extra=extra,
+            position=f"{self._photo + 1}/{len(files)}",
+        )
+
+    def _warm_next(self) -> None:
+        """Decode the next event's first shot while this one is being read."""
+        position = self._position()
+        if 0 <= position + 1 < len(self._events):
+            self._pane().warm(self._events[position + 1].first)
+
+    def _step_photo(self, delta: int) -> None:
+        event = self._current()
+        if event is None:
+            return
+        wanted = self._photo + delta
+        if not 0 <= wanted < len(event.files):
+            edge = "first" if wanted < 0 else "last"
+            self._say(f"{edge} photo of this event", warn=True)
+            return
+        self._photo = wanted
+        self._show_photo()
 
     def _show_destination(self, event: Event) -> None:
         target = self.query_one("#destination", Static)
@@ -196,7 +247,7 @@ class NameScreen(Screen):
             self._say(f"{cleaned!r} is already used in this plan", warn=True)
             return False
         self.plan.set_name(current, cleaned)
-        self._rebuild_list()
+        self._refresh_label(self._position())
         self._show_destination(current)
         return True
 
@@ -209,6 +260,23 @@ class NameScreen(Screen):
 
     def action_previous(self) -> None:
         self._select(self._position() - 1)
+
+    def action_photo_previous(self) -> None:
+        self._step_photo(-1)
+
+    def action_photo_next(self) -> None:
+        self._step_photo(1)
+
+    def action_photo_first(self) -> None:
+        if self._current() is not None:
+            self._photo = 0
+            self._show_photo()
+
+    def action_photo_last(self) -> None:
+        event = self._current()
+        if event is not None:
+            self._photo = len(event.files) - 1
+            self._show_photo()
 
     def action_back(self) -> None:
         self.app.pop_screen()

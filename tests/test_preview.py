@@ -13,6 +13,7 @@ from digicam_archiver.preview import (
     extract_frame,
     fit_box,
     format_offset,
+    load_photo,
     render_image,
     render_media,
     video_duration,
@@ -75,6 +76,30 @@ def test_render_image_mono_uses_the_ramp() -> None:
     black = render_image(Image.new("RGB", (20, 20), (0, 0, 0)), 10, 5, colour=False)
     assert white.plain.splitlines()[0] == "@" * 10
     assert black.plain.splitlines()[0] == " " * 10
+
+
+def test_load_photo_without_a_bound_decodes_everything(tmp_path: Path) -> None:
+    path = write_photo(tmp_path / "big.jpg", size=(1200, 900))
+    assert load_photo(path).size == (1200, 900)
+
+
+def test_load_photo_drafts_a_smaller_decode(tmp_path: Path) -> None:
+    path = write_photo(tmp_path / "big.jpg", size=(1200, 900))
+    small = load_photo(path, max_pixels=(100, 100))
+    assert small.width < 1200 and small.height < 900
+    # libjpeg only halves, so the aspect has to survive
+    assert small.width / small.height == pytest.approx(1200 / 900, rel=0.02)
+
+
+def test_load_photo_still_flips_a_rotated_photo(tmp_path: Path) -> None:
+    path = tmp_path / "sideways.jpg"
+    image = Image.new("RGB", (1200, 900), (10, 20, 30))
+    exif = Image.Exif()
+    exif[0x0112] = 6  # rotate 90 degrees
+    image.save(path, exif=exif)
+    turned = load_photo(path, max_pixels=(100, 100))
+    assert turned.height > turned.width
+    assert turned.width / turned.height == pytest.approx(900 / 1200, rel=0.02)
 
 
 def test_render_media_of_a_photo(tmp_path: Path) -> None:
