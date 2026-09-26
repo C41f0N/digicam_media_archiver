@@ -8,6 +8,11 @@ Nothing on the card is ever moved, renamed or deleted. Everything the tool
 produces goes into a new file in the archive, and a run that stops half way can
 be repeated: files that are already in place are skipped.
 
+## Screenshots
+![Screenshot](screenshots/partitioning.png)
+![Screenshot](screenshots/naming.png)
+
+
 ## What you need
 
 - Python 3.11 or newer
