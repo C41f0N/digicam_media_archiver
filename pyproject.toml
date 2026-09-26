@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "digicam-media-archiver"
+version = "0.1.0"
+description = "Partition a digicam JPG/AVI dump into dated events and archive them, converting AVI to MP4 with HandBrake."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=8.0",
+    "pillow>=11.0",
+    "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+digicam-archiver = "digicam_archiver.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/digicam_archiver"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning:digicam_archiver.*"]
+markers = ["ui: drives the Textual interface headless"]
+
+[tool.ruff]
+line-length = 96
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "RET", "SIM", "RUF"]
+ignore = [
+    "E501",    # the formatter does line length
+    "RUF012",  # Textual wants BINDINGS and DEFAULT_CSS as class attributes
+    "B008",    # Textual and argparse both call in defaults
+    "SIM108",  # a ternary now and then reads better
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/digicam_archiver/ui/*" = ["B008"]
+
