@@ -344,22 +344,19 @@ class PartitionScreen(Screen):
         if event is None:
             return
         self._rebuild(keep=event.start)
-        self._say_skip_above(event, self.plan.toggle_above(event))
+        self._say_skip_above(event, self.plan.skip_above(event))
 
-    def _say_skip_above(self, event: Event, now_skipped: int) -> None:
+    def _say_skip_above(self, event: Event, newly_skipped: int) -> None:
         above = next(
             (i for i, other in enumerate(self.plan.events()) if other.start == event.start),
             len(self.plan.events()),
         )
         if above == 0:
             self._say("there are no events before this one")
-        elif now_skipped:
-            self._say(
-                f"skipped {now_skipped} of {above} events before this one"
-                " (alt+x again brings them back)"
-            )
+        elif newly_skipped:
+            self._say(f"skipped {newly_skipped} of {above} events before this one")
         else:
-            self._say(f"the {above} events before this one are back in the plan")
+            self._say(f"the {above} events before this one are already skipped")
 
     def action_gap_down(self) -> None:
         self.plan.set_gap(self.plan.gap - GAP_STEP)

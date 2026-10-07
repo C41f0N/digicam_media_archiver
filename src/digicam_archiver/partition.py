@@ -119,27 +119,26 @@ class Plan:
         self._cache = None
         return excluded
 
-    def toggle_above(self, event: Event) -> int:
-        """Flip the skip flag of every event before ``event``.
+    def skip_above(self, event: Event) -> int:
+        """Mark every event before ``event`` as skipped, never the reverse.
 
         This is the one for reruns: the events before the cursor are the ones
-        that were already copied, so one keypress skips them all.  Each event
-        flips on its own, the same as pressing :meth:`toggle_excluded` on every
-        one of them, and pressing it again brings them all back.
+        that were already copied, so one keypress skips them all.  Events that
+        were already skipped stay skipped, pressing it again changes nothing,
+        and it never pulls one back into the plan.  The ``x`` key toggles a
+        single event, which is how one comes back.
 
-        Returns how many of them are now skipped, for the status line.
+        Returns how many were newly skipped, for the status line.
         """
-        above = 0
+        added = 0
         for other in self.events():
             if other.start == event.start:
                 break
-            if other.start in self.excluded_starts:
-                self.excluded_starts.discard(other.start)
-            else:
+            if other.start not in self.excluded_starts:
                 self.excluded_starts.add(other.start)
-                above += 1
+                added += 1
         self._cache = None
-        return above
+        return added
 
     def set_name(self, event: Event, name: str) -> None:
         self.names[event.start] = name

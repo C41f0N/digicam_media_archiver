@@ -208,7 +208,7 @@ def test_skipping_everything_blocks_the_next_screen(digicam: Path, archive: Path
 
 
 def test_skip_all_above_from_the_events_screen(digicam: Path, archive: Path) -> None:
-    """alt+x flips the skip flag for every event before the cursor, once and back."""
+    """alt+x skips every event before the cursor, and pressing it again keeps them out."""
 
     async def scenario() -> None:
         app = make_app(digicam, archive)
@@ -234,7 +234,50 @@ def test_skip_all_above_from_the_events_screen(digicam: Path, archive: Path) -> 
             assert "skipped 2 of 2" in str(screen.query_one("#status", Static).render())
             await pilot.press("alt+x")
             await pilot.pause()
-            assert not any(app.plan.is_excluded(event) for event in app.plan.events())
+            excluded = [
+                event.start for event in app.plan.events() if app.plan.is_excluded(event)
+            ]
+            assert excluded == starts[:2], "pressing again must not bring them back"
+            assert [event.start for event in app.plan.included()] == [starts[2]]
+
+    run(scenario)
+
+
+def test_batch_skip_keeps_manual_skips_out_of_naming(digicam: Path, archive: Path) -> None:
+    """The reported trap: x-skipping an event, then alt+x, must not drag it back."""
+
+    async def scenario() -> None:
+        app = make_app(digicam, archive)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, PartitionScreen)
+            app.plan.split_before(1)  # three events: 0, 1, 2
+            screen._rebuild(keep=1)
+            await pilot.pause()
+            starts = [event.start for event in app.plan.events()]
+            tree = screen.query_one("#events", Tree)
+            tree.move_cursor(screen._event_nodes[starts[0]])
+            await pilot.pause()
+            await pilot.press("x")  # skip the first one by hand
+            await pilot.pause()
+            assert app.plan.is_excluded(app.plan.events()[0])
+            tree.move_cursor(screen._event_nodes[starts[-1]])
+            await pilot.pause()
+            await pilot.press("alt+x")  # skip everything above the last one
+            await pilot.pause()
+            excluded = [
+                event.start for event in app.plan.events() if app.plan.is_excluded(event)
+            ]
+            assert excluded == starts[:2], "the manual skip must stay, the rest join it"
+            await pilot.press("n")
+            await pilot.pause()
+            naming = app.screen
+            assert isinstance(naming, NameScreen)
+            assert [event.start for event in naming._events] == [starts[2]], (
+                "neither the manual nor the batch skips may reach naming"
+            )
 
     run(scenario)
 
@@ -265,7 +308,12 @@ def test_skip_all_above_from_the_naming_screen(digicam: Path, archive: Path) -> 
             ] == starts[:2]
             await pilot.press("alt+x")
             await pilot.pause()
-            assert [event.start for event in naming._events] == starts
+            assert [event.start for event in naming._events] == [starts[2]], (
+                "a second press must not drag the skipped events back"
+            )
+            assert [
+                event.start for event in app.plan.events() if app.plan.is_excluded(event)
+            ] == starts[:2]
 
     run(scenario)
 

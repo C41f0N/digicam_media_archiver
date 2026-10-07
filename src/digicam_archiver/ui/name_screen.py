@@ -324,7 +324,7 @@ class NameScreen(Screen):
             (i for i, other in enumerate(self.plan.events()) if other.start == current.start),
             0,
         )
-        now_skipped = self.plan.toggle_above(current)
+        newly_skipped = self.plan.skip_above(current)
         self._events = list(self.plan.included())
         self._rebuild_list()
         position = next(
@@ -337,13 +337,13 @@ class NameScreen(Screen):
             self._select(0)
         if above == 0:
             self._say("there are no events before this one")
-        elif now_skipped:
+        elif newly_skipped:
             self._say(
-                f"skipped {now_skipped} of {above} events before this one"
-                " (alt+x again brings them back)"
+                f"skipped {newly_skipped} of {above} events before this one"
+                " (x on the events list brings one back)"
             )
         else:
-            self._say(f"the {above} events before this one are back in the plan")
+            self._say(f"the {above} events before this one are already skipped")
 
     def action_quit(self) -> None:
         self.app.exit()

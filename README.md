@@ -86,7 +86,8 @@ marks each event:
 The past events sit above the new ones in the list, so on a rerun you can go
 straight to the first new event and press `alt+x`: every event before the cursor
 is skipped, the ones that were already copied, and they never reach naming or
-the copy. Pressing `alt+x` again brings them all back.
+the copy. Pressing it again changes nothing — `x` is the key that puts a
+single event back.
 | `[which folder is this?]` | a folder holds files the card cannot explain, so it stops and asks |
 
 The naming screen offers the name the archive already uses, and you can type a
@@ -146,7 +147,7 @@ read the current one, which is why moving down the list feels instant.
 | `s` | split before the highlighted file |
 | `m` | merge this event with the next one |
 | `x` | leave this event out of the run, press again to put it back |
-| `alt+x` | do that for every event before the cursor: the already-done ones on a rerun, all at once |
+| `alt+x` | skip every event before the cursor in one go, the already-done ones on a rerun; they stay out, `x` puts a single one back |
 | `[` `]` | shorter or longer gap, 15 minutes at a time |
 | `g` | forget the manual splits and regroup with the current gap |
 | `c` | colour or plain preview |
@@ -164,7 +165,7 @@ the date, so typing over it is one keystroke.
 | key | action |
 | --- | --- |
 | `alt+down` / `alt+up` | next or previous event (`ctrl+n` also goes down) |
-| `alt+x` | skip every event before this one, they drop out of the list; press again to bring them back |
+| `alt+x` | skip every event before this one, they drop out of the list and stay out |
 | `alt+left` / `alt+right` | older or newer photo in this event |
 | `pageup` / `pagedown` | the same, for keyboards without working alt keys |
 | `alt+home` / `alt+end` | first or last photo of the event |
