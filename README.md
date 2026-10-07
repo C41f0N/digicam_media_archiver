@@ -142,6 +142,7 @@ read the current one, which is why moving down the list feels instant.
 | --- | --- |
 | `up` `down` / `k` `j` | move |
 | `right` / `left` | open an event to see its files, or close it again |
+| `shift+left` / `shift+right` | scroll a too-wide list sideways (the arrow keys never stop opening events) |
 | `s` | split before the highlighted file |
 | `m` | merge this event with the next one |
 | `x` | leave this event out of the run, press again to put it back |

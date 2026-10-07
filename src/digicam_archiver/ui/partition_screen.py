@@ -59,8 +59,12 @@ class PartitionScreen(Screen):
     BINDINGS = [
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
-        Binding("right", "expand", "Open", show=False),
-        Binding("left", "collapse", "Close", show=False),
+        # priority: the tree is a ScrollView and would otherwise swallow
+        # these for horizontal scrolling once a row is wider than the pane
+        Binding("right", "expand", "Open", show=False, priority=True),
+        Binding("left", "collapse", "Close", show=False, priority=True),
+        Binding("shift+right", "pane_right", "Scroll right", show=False, priority=True),
+        Binding("shift+left", "pane_left", "Scroll left", show=False, priority=True),
         Binding("s", "split", "Split here"),
         Binding("m", "merge", "Merge next"),
         Binding("x", "exclude", "Skip event"),
@@ -281,6 +285,20 @@ class PartitionScreen(Screen):
         parent = node.parent
         if parent is not None and parent.data is not None:
             tree.move_cursor(parent)
+
+    def action_pane_right(self) -> None:
+        """Scroll the list sideways, past the edge of the pane."""
+        tree = self.query_one("#events", Tree)
+        tree.scroll_right(animate=False)
+        if not tree.show_horizontal_scrollbar:
+            self._say("everything fits, nothing to scroll")
+
+    def action_pane_left(self) -> None:
+        """Scroll the list back towards its left edge."""
+        tree = self.query_one("#events", Tree)
+        tree.scroll_left(animate=False)
+        if not tree.show_horizontal_scrollbar or tree.scroll_x == 0:
+            self._say("back at the left edge")
 
     def action_split(self) -> None:
         ref = self._current_ref()

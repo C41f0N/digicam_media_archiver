@@ -110,6 +110,34 @@ def test_expanding_an_event_lists_its_files(digicam: Path, archive: Path) -> Non
     run(scenario)
 
 
+def test_wide_rows_do_not_block_the_arrow_keys(digicam: Path, archive: Path) -> None:
+    async def scenario() -> None:
+        app = make_app(digicam, archive)
+        app.plan.set_name(app.plan.events()[0], "a long event name that outgrows the pane " * 5)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            tree = app.screen.query_one("#events", Tree)
+            assert tree.show_horizontal_scrollbar, "the label should be wider than the pane"
+            first = tree.root.children[0]
+            await pilot.press("right")
+            await pilot.pause()
+            assert first.children, "a too-wide row blocked expanding"
+            assert tree.scroll_x == 0, "right must expand, not scroll sideways"
+            assert tree.cursor_node is first, "right keeps the cursor on the event"
+            await pilot.press("shift+right")
+            await pilot.pause()
+            assert tree.scroll_x > 0, "shift+right should scroll the list sideways"
+            assert tree.cursor_node is first, "shift+right moves the pane, not the cursor"
+            await pilot.press("shift+left")
+            await pilot.pause()
+            assert tree.scroll_x == 0, "shift+left scrolls back to the start"
+            await pilot.press("left")
+            await pilot.pause()
+            assert not first.is_expanded, "a too-wide row blocked collapsing"
+
+    run(scenario)
+
+
 def test_split_from_the_keyboard(digicam: Path, archive: Path) -> None:
     async def scenario() -> None:
         app = make_app(digicam, archive)
