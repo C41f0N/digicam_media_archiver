@@ -59,6 +59,7 @@ class NameScreen(Screen):
         # ctrl+p is Textual's command palette, so the event hops live on alt
         Binding("alt+down,ctrl+n", "next", "Next event"),
         Binding("alt+up", "previous", "Previous event"),
+        Binding("alt+x", "skip_above", "Skip all above"),
         Binding("ctrl+s", "save", "Save name", show=False),
         Binding("alt+left,pageup", "photo_previous", "Older photo"),
         Binding("alt+right,pagedown", "photo_next", "Newer photo"),
@@ -314,6 +315,35 @@ class NameScreen(Screen):
 
     def action_back(self) -> None:
         self.app.pop_screen()
+
+    def action_skip_above(self) -> None:
+        current = self._current()
+        if current is None:
+            return
+        above = next(
+            (i for i, other in enumerate(self.plan.events()) if other.start == current.start),
+            0,
+        )
+        now_skipped = self.plan.toggle_above(current)
+        self._events = list(self.plan.included())
+        self._rebuild_list()
+        position = next(
+            (i for i, e in enumerate(self._events) if e.start == current.start),
+            -1,
+        )
+        if position >= 0:
+            self._select(position)
+        elif self._events:
+            self._select(0)
+        if above == 0:
+            self._say("there are no events before this one")
+        elif now_skipped:
+            self._say(
+                f"skipped {now_skipped} of {above} events before this one"
+                " (alt+x again brings them back)"
+            )
+        else:
+            self._say(f"the {above} events before this one are back in the plan")
 
     def action_quit(self) -> None:
         self.app.exit()

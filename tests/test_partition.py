@@ -144,6 +144,40 @@ def test_exclude_and_include(plan: Plan) -> None:
     assert [event.start for event in plan.included()] == [0, 3]
 
 
+def test_toggle_above_skips_every_event_before_the_cursor(plan: Plan) -> None:
+    plan.split_before(2)  # events starting at 0, 2 and 3
+    cursor = plan.events()[-1]
+    assert plan.toggle_above(cursor) == 2
+    assert [event.start for event in plan.included()] == [cursor.start]
+    assert [event.start for event in plan.events() if plan.is_excluded(event)] == [0, 2]
+
+
+def test_toggle_above_is_a_toggle(plan: Plan) -> None:
+    plan.split_before(2)
+    cursor = plan.events()[-1]
+    plan.toggle_above(cursor)
+    assert plan.toggle_above(cursor) == 0
+    assert [event.start for event in plan.included()] == [0, 2, 3]
+
+
+def test_toggle_above_on_the_first_event_is_a_noop(plan: Plan) -> None:
+    first = plan.events()[0]
+    assert plan.toggle_above(first) == 0
+    assert not plan.is_excluded(first)
+    assert [event.start for event in plan.included()] == [0, 3]
+
+
+def test_toggle_above_flips_events_one_by_one(plan: Plan) -> None:
+    plan.split_before(2)
+    events = plan.events()
+    plan.toggle_excluded(events[0])  # the first one was skipped by hand
+    cursor = events[-1]
+    plan.toggle_above(cursor)  # flips both: first comes back, middle gets skipped
+    assert [event.start for event in plan.events() if plan.is_excluded(event)] == [2]
+    plan.toggle_above(cursor)  # and back the other way
+    assert [event.start for event in plan.events() if plan.is_excluded(event)] == [0]
+
+
 def test_changing_the_gap_keeps_manual_splits(plan: Plan) -> None:
     plan.split_before(2)
     plan.set_gap(timedelta(minutes=20))

@@ -64,6 +64,7 @@ class PartitionScreen(Screen):
         Binding("s", "split", "Split here"),
         Binding("m", "merge", "Merge next"),
         Binding("x", "exclude", "Skip event"),
+        Binding("alt+x", "skip_above", "Skip all above"),
         Binding("left_square_bracket", "gap_down", "Shorter gap"),
         Binding("right_square_bracket", "gap_up", "Longer gap"),
         Binding("g", "auto", "Re-run auto"),
@@ -316,6 +317,31 @@ class PartitionScreen(Screen):
         excluded = self.plan.toggle_excluded(event)
         self._rebuild(keep=event.start)
         self._say("skipped, it will not be archived" if excluded else "back in the plan")
+
+    def action_skip_above(self) -> None:
+        ref = self._current_ref()
+        if ref is None or ref.kind != "event":
+            return
+        event = self._event_of(ref.start)
+        if event is None:
+            return
+        self._rebuild(keep=event.start)
+        self._say_skip_above(event, self.plan.toggle_above(event))
+
+    def _say_skip_above(self, event: Event, now_skipped: int) -> None:
+        above = next(
+            (i for i, other in enumerate(self.plan.events()) if other.start == event.start),
+            len(self.plan.events()),
+        )
+        if above == 0:
+            self._say("there are no events before this one")
+        elif now_skipped:
+            self._say(
+                f"skipped {now_skipped} of {above} events before this one"
+                " (alt+x again brings them back)"
+            )
+        else:
+            self._say(f"the {above} events before this one are back in the plan")
 
     def action_gap_down(self) -> None:
         self.plan.set_gap(self.plan.gap - GAP_STEP)

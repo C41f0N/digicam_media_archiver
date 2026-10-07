@@ -179,6 +179,69 @@ def test_skipping_everything_blocks_the_next_screen(digicam: Path, archive: Path
     run(scenario)
 
 
+def test_skip_all_above_from_the_events_screen(digicam: Path, archive: Path) -> None:
+    """alt+x flips the skip flag for every event before the cursor, once and back."""
+
+    async def scenario() -> None:
+        app = make_app(digicam, archive)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, PartitionScreen)
+            app.plan.split_before(1)  # a third event, so there is a middle
+            screen._rebuild(keep=1)
+            await pilot.pause()
+            starts = [event.start for event in app.plan.events()]
+            assert len(starts) == 3
+            tree = screen.query_one("#events", Tree)
+            tree.move_cursor(screen._event_nodes[starts[-1]])
+            await pilot.pause()
+            await pilot.press("alt+x")
+            await pilot.pause()
+            excluded = [
+                event.start for event in app.plan.events() if app.plan.is_excluded(event)
+            ]
+            assert excluded == starts[:2], "only the events above the cursor"
+            assert "skipped 2 of 2" in str(screen.query_one("#status", Static).render())
+            await pilot.press("alt+x")
+            await pilot.pause()
+            assert not any(app.plan.is_excluded(event) for event in app.plan.events())
+
+    run(scenario)
+
+
+def test_skip_all_above_from_the_naming_screen(digicam: Path, archive: Path) -> None:
+    """The same key on the naming screen, where skipped events drop out of the list."""
+
+    async def scenario() -> None:
+        app = make_app(digicam, archive)
+        async with app.run_test(size=SIZE) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.plan.split_before(1)
+            app.screen._rebuild(keep=0)
+            await pilot.press("n")
+            await pilot.pause()
+            naming = app.screen
+            assert isinstance(naming, NameScreen)
+            starts = [event.start for event in app.plan.events()]
+            assert len(naming._events) == 3
+            naming._select(2)
+            await pilot.pause()
+            await pilot.press("alt+x")
+            await pilot.pause()
+            assert [event.start for event in naming._events] == [starts[2]]
+            assert [
+                event.start for event in app.plan.events() if app.plan.is_excluded(event)
+            ] == starts[:2]
+            await pilot.press("alt+x")
+            await pilot.pause()
+            assert [event.start for event in naming._events] == starts
+
+    run(scenario)
+
+
 def test_gap_keys_repartition(digicam: Path, archive: Path) -> None:
     async def scenario() -> None:
         app = make_app(digicam, archive)

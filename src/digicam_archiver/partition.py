@@ -119,6 +119,28 @@ class Plan:
         self._cache = None
         return excluded
 
+    def toggle_above(self, event: Event) -> int:
+        """Flip the skip flag of every event before ``event``.
+
+        This is the one for reruns: the events before the cursor are the ones
+        that were already copied, so one keypress skips them all.  Each event
+        flips on its own, the same as pressing :meth:`toggle_excluded` on every
+        one of them, and pressing it again brings them all back.
+
+        Returns how many of them are now skipped, for the status line.
+        """
+        above = 0
+        for other in self.events():
+            if other.start == event.start:
+                break
+            if other.start in self.excluded_starts:
+                self.excluded_starts.discard(other.start)
+            else:
+                self.excluded_starts.add(other.start)
+                above += 1
+        self._cache = None
+        return above
+
     def set_name(self, event: Event, name: str) -> None:
         self.names[event.start] = name
 
